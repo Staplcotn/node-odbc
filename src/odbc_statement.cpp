@@ -608,3 +608,241 @@ Napi::Value ODBCStatement::Close(const Napi::CallbackInfo& info) {
 
   return env.Undefined();
 }
+
+Napi::Value ODBCStatement::ExecuteSync(const Napi::CallbackInfo& info) {
+    // private:
+  ODBCConnection *odbcConnection = this->odbcConnection;
+  ODBCStatement  *odbcStatement = this;
+  StatementData  *data = this->data;
+
+  Napi::Env env = info.Env();
+  Napi::HandleScope scope(env);
+
+  Napi::Function callback;
+
+  size_t argument_count = info.Length();
+  // ensuring the passed parameters are correct
+  if ((argument_count == 1 && info[0].IsFunction()) || (argument_count == 2 && info[1].IsFunction())) {
+    callback = info[argument_count - 1].As<Napi::Function>();
+  }
+
+  Napi::Value error;
+
+  // ensuring the passed parameters are correct
+  if (argument_count >= 1 && info[0].IsObject()) {
+    error =
+    parse_query_options
+    (
+      env,
+      info[0].As<Napi::Object>(),
+      &this->data->query_options
+    );
+  } else {
+    error =
+    parse_query_options
+    (
+      env,
+      env.Null(),
+      &this->data->query_options
+    );
+  }
+
+  if (!error.IsNull())
+  {
+    // Error when parsing the query options. Return the callback with the error
+    std::vector<napi_value> callback_argument =
+    {
+      error
+    };
+    callback.Call(callback_argument);
+  }
+
+  if(this->data->hstmt == SQL_NULL_HANDLE) {
+    Napi::Error error = Napi::Error::New(env, "Statment handle is no longer valid. Cannot execute SQL on an invalid statment handle.");
+    std::vector<napi_value> callbackArguments;
+    callbackArguments.push_back(error.Value());
+    callback.Call(callbackArguments);
+    return env.Undefined();
+  }
+ 
+
+      SQLRETURN return_code;
+
+      // set SQL_ATTR_QUERY_TIMEOUT
+      if (data->query_options.timeout > 0) {
+        return_code =
+        SQLSetStmtAttr
+        (
+          data->hstmt,
+          SQL_ATTR_QUERY_TIMEOUT,
+          (SQLPOINTER) data->query_options.timeout,
+          IGNORED_PARAMETER
+        );
+
+        // It is possible that SQLSetStmtAttr returns a warning with SQLSTATE
+        // 01S02, indicating that the driver changed the value specified.
+        // Although we never use the timeout variable again (and so we don't
+        // REALLY need it to be correct in the code), its just good to have
+        // the correct value if we need it.
+        if (return_code == SQL_SUCCESS_WITH_INFO)
+        {
+          return_code =
+          SQLGetStmtAttr
+          (
+            data->hstmt,
+            SQL_ATTR_QUERY_TIMEOUT,
+            (SQLPOINTER) &data->query_options.timeout,
+            SQL_IS_UINTEGER,
+            IGNORED_PARAMETER
+          );
+        }
+
+        // Both of the SQL_ATTR_QUERY_TIMEOUT calls are combined here
+      //   if (!SQL_SUCCEEDED(return_code)) {
+      //     this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      //     SetError("[odbc] Error setting the query timeout on the statement\0");
+      //     return;
+      //   }
+      // }
+
+      return_code =
+      set_fetch_size
+      (
+        data,
+        data->query_options.fetch_size
+      );
+      // if (!SQL_SUCCEEDED(return_code)) {
+      //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      //   SetError("[odbc] Error setting the fetch size\0");
+      //   return;
+      // }
+
+      return_code =
+      SQLExecute
+      (
+        data->hstmt // StatementHandle
+      );
+      // if (!SQL_SUCCEEDED(return_code)) {
+      //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      //   SetError("[odbc] Error executing the statement\0");
+      //   return;
+      // }
+
+      if (return_code != SQL_NO_DATA) {
+        if (data->query_options.use_cursor)
+        {
+          if (data->query_options.cursor_name != NULL)
+          {
+            return_code =
+            SQLSetCursorName
+            (
+              data->hstmt,
+              data->query_options.cursor_name,
+              data->query_options.cursor_name_length
+            );
+
+            // if (!SQL_SUCCEEDED(return_code)) {
+            //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            //   SetError("[odbc] Error setting the cursor name on the statement\0");
+            //   return;
+            // }
+          }
+        }
+
+        // set_fetch_size will swallow errors in the case that the driver
+        // doesn't implement SQL_ATTR_ROW_ARRAY_SIZE for SQLSetStmtAttr and
+        // the fetch size was 1. If the fetch size was set by the user to a
+        // value greater than 1, throw an error.
+        // if (!SQL_SUCCEEDED(return_code)) {
+        //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+        //   SetError("[odbc] Error setting the fetch size on the statement\0");
+        //   return;
+        // }
+
+        return_code =
+        prepare_for_fetch
+        (
+          data
+        );
+        // if (!SQL_SUCCEEDED(return_code)) {
+        //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+        //   SetError("[odbc] Error preparing for fetch\0");
+        //   return;
+        // }
+
+
+        if (!data->query_options.use_cursor)
+        {
+          bool alloc_error = false;
+          return_code =
+          fetch_all_and_store
+          (
+            data,
+            true,
+            &alloc_error
+          );
+          if (alloc_error)
+          {
+                Napi::Error error = Napi::Error::New(env, "[odbc] Error allocating or reallocating memory when fetching data. No ODBC error information available.\0");
+                error.ThrowAsJavaScriptException();
+            return env.Undefined();
+            // SetError("[odbc] Error allocating or reallocating memory when fetching data. No ODBC error information available.\0");
+          }
+          // if (!SQL_SUCCEEDED(return_code)) {
+          //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+          //   SetError("[odbc] Error retrieving the result set from the statement\0");
+          //   return;
+          // }
+        }
+      
+      // std::vector<napi_value> callbackArguments;
+      // Napi::Function cb;
+      // if (data->query_options.use_cursor)
+      // {
+      //   // arguments for the ODBCCursor constructor
+      //   std::vector<napi_value> cursor_arguments =
+      //   {
+      //     Napi::External<StatementData>::New(env, data),
+      //     Napi::External<ODBCConnection>::New(env, this->odbcConnection),
+      //     this->odbcStatement->napiParameters.Value(),
+      //     Napi::Boolean::New(env, false)
+      //   };
+  
+      //   // create a new ODBCCursor object as a Napi::Value
+      //   Napi::Value cursorObject = ODBCCursor::constructor.New(cursor_arguments);
+
+      //   // return cursor
+      //   std::vector<napi_value> callbackArguments =
+      //   {
+      //     env.Null(),
+      //     cursorObject
+      //   };
+
+      //   // Callback().Call(callbackArguments);
+      // }
+      // else
+      // {
+        Napi::Array rows = process_data_for_napi(env, data, odbcStatement->napiParameters.Value());
+
+        std::vector<napi_value> callbackArguments;
+        callbackArguments.push_back(env.Null());
+        callbackArguments.push_back(rows);
+        return rows;
+        // Callback().Call(callbackArguments);
+      // }
+      // return;
+    
+
+  // public:
+  //   ExecuteAsyncWorker(ODBCStatement *odbcStatement, Napi::Function& callback) : ODBCAsyncWorker(callback),
+  //     odbcConnection(odbcStatement->odbcConnection),
+  //     odbcStatement(odbcStatement),
+  //     data(odbcStatement->data) {}
+
+  //   ~ExecuteAsyncWorker() {}
+}
+  else {
+    return env.Undefined();
+  }
+      }
+}

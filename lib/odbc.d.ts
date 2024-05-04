@@ -38,6 +38,7 @@ declare namespace odbc {
     bind(parameters: Array<number|string>, callback: (error: NodeOdbcError) => undefined): undefined;
 
     execute<T>(callback: (error: NodeOdbcError, result: Result<T>) => undefined): undefined;
+    executeSync<T>(query: string): Result<T>;
 
     close(callback: (error: NodeOdbcError) => undefined): undefined;
 

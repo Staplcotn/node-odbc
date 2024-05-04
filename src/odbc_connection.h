@@ -55,6 +55,8 @@ class ODBCConnection : public Napi::ObjectWrap<ODBCConnection> {
   ODBCConnection(const Napi::CallbackInfo& info);
   ~ODBCConnection();
 
+  SQLHDBC hDBC;
+  SQLHENV hENV;
   private:
 
   SQLRETURN Free();
@@ -63,6 +65,7 @@ class ODBCConnection : public Napi::ObjectWrap<ODBCConnection> {
   Napi::Value Close(const Napi::CallbackInfo& info);
   Napi::Value CreateStatement(const Napi::CallbackInfo& info);
   Napi::Value Query(const Napi::CallbackInfo& info);
+  Napi::Value QuerySync(const Napi::CallbackInfo& info);
   Napi::Value CallProcedure(const Napi::CallbackInfo& info);
 
   Napi::Value BeginTransaction(const Napi::CallbackInfo& info);
@@ -96,8 +99,6 @@ class ODBCConnection : public Napi::ObjectWrap<ODBCConnection> {
 
   int numStatements;
 
-  SQLHENV hENV;
-  SQLHDBC hDBC;
 
   ConnectionOptions connectionOptions;
 

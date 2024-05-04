@@ -1013,6 +1013,283 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
     }
 };
 
+Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject, 
+  Napi::Array napiParameterArray, 
+  StatementData *data,       
+  Napi::Function& callback,
+  Napi::Env env
+) {
+  Napi::HandleScope scope(env);
+
+    // ODBCConnection              *odbcConnectionObject;
+    Napi::Reference<Napi::Array>  napiParameters;
+    // StatementData                *data;
+
+    // void Execute() {
+
+      SQLRETURN return_code;
+
+      // allocate a new statement handle
+      uv_mutex_lock(&ODBC::g_odbcMutex);
+      // if (odbcConnectionObject->hDBC == SQL_NULL_HANDLE) {
+      //   uv_mutex_unlock(&ODBC::g_odbcMutex);
+      //       Napi::Error error = Napi::Error::New(env, "[odbc] Database connection handle was no longer valid. Cannot run a query after closing the connection.");
+
+      //   // SetError("[odbc] Database connection handle was no longer valid. Cannot run a query after closing the connection.");
+      //       error.ThrowAsJavaScriptException();
+      //       return env.Undefined();  
+      // } else {
+        return_code = SQLAllocHandle(
+          SQL_HANDLE_STMT,            // HandleType
+          odbcConnectionObject->hDBC, // InputHandle
+          &(data->hstmt)              // OutputHandlePtr
+        );
+        uv_mutex_unlock(&ODBC::g_odbcMutex);
+        // if (!SQL_SUCCEEDED(return_code)) {
+        //   this->errors = GetODBCErrors(SQL_HANDLE_DBC, odbcConnectionObject->hDBC);
+        //   SetError("[odbc] Error allocating a handle to run the SQL statement\0");
+        //   return;
+        // }
+
+        // set SQL_ATTR_QUERY_TIMEOUT
+        if (data->query_options.timeout > 0) {
+          return_code =
+          SQLSetStmtAttr
+          (
+            data->hstmt,
+            SQL_ATTR_QUERY_TIMEOUT,
+            (SQLPOINTER) data->query_options.timeout,
+            IGNORED_PARAMETER
+          );
+
+          // It is possible that SQLSetStmtAttr returns a warning with SQLSTATE
+          // 01S02, indicating that the driver changed the value specified.
+          // Although we never use the timeout variable again (and so we don't
+          // REALLY need it to be correct in the code), its just good to have
+          // the correct value if we need it.
+          if (return_code == SQL_SUCCESS_WITH_INFO)
+          {
+            return_code =
+            SQLGetStmtAttr
+            (
+              data->hstmt,
+              SQL_ATTR_QUERY_TIMEOUT,
+              (SQLPOINTER) &data->query_options.timeout,
+              SQL_IS_UINTEGER,
+              IGNORED_PARAMETER
+            );
+          }
+
+          // Both of the SQL_ATTR_QUERY_TIMEOUT calls are combined here
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error setting the query timeout on the statement\0");
+
+            // SetError("[odbc] Error setting the query timeout on the statement\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+        }
+
+        // querying with parameters, need to prepare, bind, execute
+        if (data->parameterCount > 0) {
+          // binds all parameters to the query
+          return_code =
+          SQLPrepare
+          (
+            data->hstmt,
+            data->sql,
+            SQL_NTS
+          );
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error preparing the SQL statement\0");
+
+            // SetError("[odbc] Error preparing the SQL statement\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+
+          SQLSMALLINT parameterMarkerCount;
+
+          return_code =
+          SQLNumParams
+          (
+            data->hstmt,
+            &parameterMarkerCount
+          );
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error getting information about the number of parameter markers in the statment\0");
+
+            // SetError("[odbc] Error getting information about the number of parameter markers in the statment\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+
+          if (parameterMarkerCount != data->parameterCount) {
+            Napi::Error error = Napi::Error::New(env, "[odbc] The number of parameter markers in the statement does not equal the number of bind values passed to the function.");
+
+            // SetError("[odbc] The number of parameter markers in the statement does not equal the number of bind values passed to the function.");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+
+          return_code = ODBC::DescribeParameters(data->hstmt, data->parameters, data->parameterCount);
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error getting information about parameters\0");
+
+            // SetError("[odbc] Error getting information about parameters\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+
+          return_code = ODBC::BindParameters(data->hstmt, data->parameters, data->parameterCount);
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error binding parameters\0");
+
+            // SetError("[odbc] Error binding parameters\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();          }
+
+          return_code = SQLExecute(data->hstmt);
+          if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error executing the sql statement\0");
+
+            // SetError("[odbc] Error executing the sql statement\0");
+        error.ThrowAsJavaScriptException();
+            return env.Undefined();          }
+        }
+        // querying without parameters, can just use SQLExecDirect
+        else {
+          return_code =
+          SQLExecDirect
+          (
+            data->hstmt,
+            data->sql,
+            SQL_NTS
+          );
+          if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error executing the sql statement\0");
+
+            // SetError("[odbc] Error executing the sql statement\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();            }
+        }
+
+        if (return_code != SQL_NO_DATA) {
+
+          if (data->query_options.use_cursor)
+          {
+            if (data->query_options.cursor_name != NULL)
+            {
+              return_code =
+              SQLSetCursorName
+              (
+                data->hstmt,
+                data->query_options.cursor_name,
+                data->query_options.cursor_name_length
+              );
+
+              if (!SQL_SUCCEEDED(return_code)) {
+                // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+                Napi::Error error = Napi::Error::New(env, "[odbc] Error setting the cursor name on the statement\0");
+
+                // SetError("[odbc] Error setting the cursor name on the statement\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+              }
+            }
+          }
+
+          return_code =
+          set_fetch_size
+          (
+            data,
+            data->query_options.fetch_size
+          );
+
+          // set_fetch_size will swallow errors in the case that the driver
+          // doesn't implement SQL_ATTR_ROW_ARRAY_SIZE for SQLSetStmtAttr and
+          // the fetch size was 1. If the fetch size was set by the user to a
+          // value greater than 1, throw an error.
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env,"[odbc] Error setting the fetch size on the statement\0");
+
+            // SetError("[odbc] Error setting the fetch size on the statement\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+
+          return_code =
+          prepare_for_fetch
+          (
+            data
+          );
+          if (!SQL_SUCCEEDED(return_code)) {
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Error preparing for fetch\0");
+
+            // SetError("[odbc] Error preparing for fetch\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+          }
+
+
+          if (!data->query_options.use_cursor)
+          {
+            bool alloc_error = false;
+            return_code =
+            fetch_all_and_store
+            (
+              data,
+              true,
+              &alloc_error
+            );
+            if (alloc_error)
+            {
+              Napi::Error error = Napi::Error::New(env, "[odbc] Error allocating or reallocating memory when fetching data. No ODBC error information available.\0");
+
+              // SetError("[odbc] Error allocating or reallocating memory when fetching data. No ODBC error information available.\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+            }
+            if (!SQL_SUCCEEDED(return_code)) {
+              // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+              Napi::Error error = Napi::Error::New(env, "[odbc] Error retrieving the result set from the statement\0");
+
+              // SetError("[odbc] Error retrieving the result set from the statement\0");
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+            }
+          }
+        }
+      // } checking of stmthandle
+    // }
+
+    // void OnOK() {
+
+    //   Napi::Env env = Env();
+    //   Napi::HandleScope scope(env);
+
+      std::vector<napi_value> callbackArguments;
+      Napi::Array rows = process_data_for_napi(env, data, napiParameters.Value());
+
+      callbackArguments =
+        {
+          env.Null(),
+          rows
+        };
+
+        // return results
+      return rows;
+   
+};
 /*
  *  ODBCConnection::Query
  *
@@ -1146,6 +1423,127 @@ Napi::Value ODBCConnection::Query(const Napi::CallbackInfo& info) {
     QueryAsyncWorker *worker;
     worker = new QueryAsyncWorker(this, napiParameterArray, data, callback);
     worker->Queue();
+  }
+
+  return env.Undefined();
+}
+Napi::Value ODBCConnection::QuerySync(const Napi::CallbackInfo& info) {
+
+  Napi::Env env = info.Env();
+  Napi::HandleScope scope(env);
+
+  StatementData *data                      = new StatementData();
+                 data->henv                = this->hENV;
+                 data->hdbc                = this->hDBC;
+                 data->fetch_array         = this->connectionOptions.fetchArray;
+                 data->maxColumnNameLength = this->getInfoResults.max_column_name_length;
+                 data->get_data_supports   = this->getInfoResults.sql_get_data_supports;
+  Napi::Array    napiParameterArray = Napi::Array::New(env);
+  size_t         argument_count     = info.Length();
+
+  // For the C++ node-addon-api code, all of the function signatures must
+  // include a callback function as the final parameter because we need to
+  // have a function to pass to the AsyncWorker as a Callback. The JavaScript
+  // wrapper functions enforce the correct number of arguments, so just need
+  // to check for null/undefined in a given spot.
+  if
+  (
+    argument_count != 4   ||
+    info[0].IsNull()      ||
+    info[0].IsUndefined() ||
+    !info[0].IsString()   ||
+    !(
+      info[1].IsArray() ||
+      info[1].IsNull() ||
+      info[1].IsUndefined()
+    ) ||
+    !(
+      info[2].IsObject() ||
+      info[2].IsNull() ||
+      info[2].IsUndefined()
+    ) ||
+    info[3].IsNull()      ||
+    info[3].IsUndefined() ||
+    !info[3].IsFunction()
+  )
+  {
+    Napi::TypeError::New(env, "[node-odbc]: Wrong function signature in call to Connection.query({string}, {array}[optional], {object}[optional], {function}).").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+
+  // Store the SQL query string in the data structure
+  Napi::String sql = info[0].ToString();
+  data->sql = ODBC::NapiStringToSQLTCHAR(sql);
+
+  // Store the callback function to call at the end of the AsyncWorker
+  Napi::Function callback = info[3].As<Napi::Function>();
+
+  // If info[1] is not null or undefined, it is an array holding our parameters
+  if (!(info[1].IsNull() || info[1].IsUndefined()))
+  {
+    napiParameterArray = info[1].As<Napi::Array>();
+    data->parameterCount = (SQLSMALLINT)napiParameterArray.Length();
+    data->parameters = new Parameter*[data->parameterCount];
+    for (SQLSMALLINT i = 0; i < data->parameterCount; i++) {
+      data->parameters[i] = new Parameter();
+    }
+    ODBC::StoreBindValues(&napiParameterArray, data->parameters);
+  }
+
+  Napi::Value   error;
+
+  // if info[2] is not null or undefined or an array or a function, it is an
+  // object holding the query options
+  if (
+    (
+      !info[2].IsObject()   ||
+      info[2].IsNull()      ||
+      info[2].IsUndefined() ||
+      info[2].IsArray()     ||
+      info[2].IsFunction()
+    )
+  )
+  {
+    error =
+    parse_query_options
+    (
+      env,
+      env.Null(),
+      &data->query_options
+    );
+  }
+  else
+  {
+    error =
+    parse_query_options
+    (
+      env,
+      info[2].As<Napi::Object>(),
+      &data->query_options
+    );
+  }
+
+  if (!error.IsNull())
+  {
+    // Error when parsing the query options. Return the callback with the error
+    std::vector<napi_value> callback_argument =
+    {
+      error
+    };
+    callback.Call(callback_argument);
+  }
+  else
+  {
+    Napi::Value qsyncworker = QuerySyncWorker(this, napiParameterArray, data, callback, env);
+    // QuerySyncWorker(ODBCConnection *odbcConnectionObject, 
+    // Napi::Array napiParameterArray, 
+    // StatementData *data,       
+    // Napi::Function& callback,
+    // const Napi::CallbackInfo& info)
+    // Have parsed the arguments, now create the AsyncWorker and queue the work
+    // QueryAsyncWorker *worker;
+    // worker = new QueryAsyncWorker(this, napiParameterArray, data, callback);
+    // worker->Queue();
   }
 
   return env.Undefined();
