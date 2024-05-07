@@ -144,6 +144,11 @@ declare namespace odbc {
     rollback(): Promise<void>;
 
     close(): Promise<void>;
+
+    //////
+    // Sync
+    /////
+    querySync<T>(sql: string): Result<T>
   }
 
   class Pool {

@@ -20,7 +20,7 @@
 #include "odbc_connection.h"
 #include "odbc_statement.h"
 #include "odbc_cursor.h"
-
+#include "iostream"
 #define MAX_UTF8_BYTES 4
 
 // object keys for the result object
@@ -47,6 +47,7 @@ Napi::Object ODBCConnection::Init(Napi::Env env, Napi::Object exports) {
     InstanceMethod("close", &ODBCConnection::Close),
     InstanceMethod("createStatement", &ODBCConnection::CreateStatement),
     InstanceMethod("query", &ODBCConnection::Query),
+    InstanceMethod("querySync", &ODBCConnection::QuerySync),
     InstanceMethod("beginTransaction", &ODBCConnection::BeginTransaction),
     InstanceMethod("commit", &ODBCConnection::Commit),
     InstanceMethod("rollback", &ODBCConnection::Rollback),
@@ -710,7 +711,7 @@ set_fetch_size
 
   return return_code;
 }
-
+// class QuerySyncWorker: public ODBCAsyncWorker {}
 // QueryAsyncWorker, used by Query function (see below)
 class QueryAsyncWorker : public ODBCAsyncWorker {
 
@@ -1019,8 +1020,10 @@ Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject,
   Napi::Function& callback,
   Napi::Env env
 ) {
-  Napi::HandleScope scope(env);
-
+    Napi::HandleScope scope(env);
+    // Napi::Error error = Napi::Error::New(env, e.Message());
+    Napi::Array odbcErrors = Napi::Array::New(env);
+    SQLINTEGER statusRecCount;
     // ODBCConnection              *odbcConnectionObject;
     Napi::Reference<Napi::Array>  napiParameters;
     // StatementData                *data;
@@ -1029,16 +1032,17 @@ Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject,
 
       SQLRETURN return_code;
 
+
       // allocate a new statement handle
       uv_mutex_lock(&ODBC::g_odbcMutex);
-      // if (odbcConnectionObject->hDBC == SQL_NULL_HANDLE) {
-      //   uv_mutex_unlock(&ODBC::g_odbcMutex);
-      //       Napi::Error error = Napi::Error::New(env, "[odbc] Database connection handle was no longer valid. Cannot run a query after closing the connection.");
+      if (odbcConnectionObject->hDBC == SQL_NULL_HANDLE) {
+        uv_mutex_unlock(&ODBC::g_odbcMutex);
+            Napi::Error error = Napi::Error::New(env, "[odbc] Database connection handle was no longer valid. Cannot run a query after closing the connection.");
 
       //   // SetError("[odbc] Database connection handle was no longer valid. Cannot run a query after closing the connection.");
-      //       error.ThrowAsJavaScriptException();
-      //       return env.Undefined();  
-      // } else {
+            error.ThrowAsJavaScriptException();
+            return env.Undefined();  
+      } else {
         return_code = SQLAllocHandle(
           SQL_HANDLE_STMT,            // HandleType
           odbcConnectionObject->hDBC, // InputHandle
@@ -1050,7 +1054,6 @@ Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject,
         //   SetError("[odbc] Error allocating a handle to run the SQL statement\0");
         //   return;
         // }
-
         // set SQL_ATTR_QUERY_TIMEOUT
         if (data->query_options.timeout > 0) {
           return_code =
@@ -1173,14 +1176,89 @@ Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject,
             SQL_NTS
           );
           if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
-            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
-            Napi::Error error = Napi::Error::New(env, "[odbc] Error executing the sql statement\0");
+              // ODBCError error;
+              SQLSMALLINT new_error_message_length;
+              SQLINTEGER statusRecCount;
+              SQLSMALLINT error_message_length = ERROR_MESSAGE_BUFFER_CHARS;
 
+              // error.message = new SQLTCHAR[ERROR_MESSAGE_BUFFER_CHARS];
+              
+              return_code =
+                  SQLGetDiagField
+                  (
+                    SQL_HANDLE_STMT,                // HandleType
+                    data->hstmt,                    // Handle
+                    0,                     // RecNumber
+                   SQL_DIAG_NUMBER,               // SQLState
+                    &statusRecCount,               // NativeErrorPtr
+                    SQL_IS_INTEGER,  // BufferLength
+                    NULL             // StringLengthPtr
+                  );
+      ODBCError *odbcErrors = new ODBCError[statusRecCount];
+const SQLTCHAR NO_STATE_TEXT = '\0';
+  const char* NO_MSG_TEXT = "<No error information available>\0";
+  const size_t NO_MSG_TEXT_LENGTH = strlen(NO_MSG_TEXT);
+  const size_t NO_MSG_TEXT_SIZE = NO_MSG_TEXT_LENGTH * sizeof(SQLTCHAR);
+  for (SQLSMALLINT i = 0; i < statusRecCount; i++) {
+
+    ODBCError error;
+  // printf("%s %s\n",  "Hellooo");
+
+    SQLSMALLINT new_error_message_length;
+    return_code = SQL_SUCCESS;
+
+    while(SQL_SUCCEEDED(return_code))
+    {
+      error.message = new SQLTCHAR[error_message_length];
+
+      return_code =
+                  SQLGetDiagRec
+                  (
+                    SQL_HANDLE_STMT,                // HandleType
+                    data->hstmt,                    // Handle
+                    i + 1,                     // RecNumber
+                    error.state,               // SQLState
+                    &error.code,               // NativeErrorPtr
+                    error.message,             // MessageText
+                    ERROR_MESSAGE_BUFFER_CHARS,      // BufferLength
+                    &new_error_message_length  // TextLengthPtr
+                  );
+
+      if (error_message_length > new_error_message_length)
+      {
+        break;
+      }
+
+      delete[] error.message;
+      error_message_length = new_error_message_length + 1;
+      if (error.message != NULL) {
+      printf("%s\n", error.message);
+
+      } else {
+        printf("%s\n","No Error!");
+      }
+    if (!SQL_SUCCEEDED(return_code))
+    {
+      error.state[0] = NO_STATE_TEXT;
+      error.code = 0;
+      memcpy(error.message, NO_MSG_TEXT, NO_MSG_TEXT_SIZE + 1); 
+    }
+
+    }
+  //  Napi::String s = Napi::String::New(env, error.message);
+    
+
+  }
+            // this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+            Napi::Error jserror = Napi::Error::New(env, "[odbc] Error executing the sql statement\0");
+            // printf( error.message, error.state);
             // SetError("[odbc] Error executing the sql statement\0");
-            error.ThrowAsJavaScriptException();
+            jserror.ThrowAsJavaScriptException();
             return env.Undefined();            }
         }
 
+      // std::string str = "Hello";
+      // const char* word = str.c_str();
         if (return_code != SQL_NO_DATA) {
 
           if (data->query_options.use_cursor)
@@ -1269,7 +1347,7 @@ Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject,
             }
           }
         }
-      // } checking of stmthandle
+      } 
     // }
 
     // void OnOK() {
@@ -1285,7 +1363,7 @@ Napi::Value QuerySyncWorker(ODBCConnection *odbcConnectionObject,
           env.Null(),
           rows
         };
-
+      callback.MakeCallback(env.Global(), callbackArguments);
         // return results
       return rows;
    
@@ -1446,49 +1524,50 @@ Napi::Value ODBCConnection::QuerySync(const Napi::CallbackInfo& info) {
   // have a function to pass to the AsyncWorker as a Callback. The JavaScript
   // wrapper functions enforce the correct number of arguments, so just need
   // to check for null/undefined in a given spot.
-  if
-  (
-    argument_count != 4   ||
-    info[0].IsNull()      ||
-    info[0].IsUndefined() ||
-    !info[0].IsString()   ||
-    !(
-      info[1].IsArray() ||
-      info[1].IsNull() ||
-      info[1].IsUndefined()
-    ) ||
-    !(
-      info[2].IsObject() ||
-      info[2].IsNull() ||
-      info[2].IsUndefined()
-    ) ||
-    info[3].IsNull()      ||
-    info[3].IsUndefined() ||
-    !info[3].IsFunction()
-  )
-  {
-    Napi::TypeError::New(env, "[node-odbc]: Wrong function signature in call to Connection.query({string}, {array}[optional], {object}[optional], {function}).").ThrowAsJavaScriptException();
-    return env.Null();
-  }
+  // snprintf("Hello");
+  // if
+  // (
+  //   argument_count != 4   ||
+  //   info[0].IsNull()      ||
+  //   info[0].IsUndefined() ||
+  //   !info[0].IsString()   ||
+  //   !(
+  //     info[1].IsArray() ||
+  //     info[1].IsNull() ||
+  //     info[1].IsUndefined()
+  //   ) ||
+  //   !(
+  //     info[2].IsObject() ||
+  //     info[2].IsNull() ||
+  //     info[2].IsUndefined()
+  //   ) ||
+  //   info[3].IsNull()      ||
+  //   info[3].IsUndefined() ||
+  //   !info[3].IsFunction()
+  // )
+  // {
+  //   Napi::TypeError::New(env, "[node-odbc]: Wrong function signature in call to Connection.querySync({string}, {array}[optional], {object}[optional], {function}).").ThrowAsJavaScriptException();
+  //   return env.Null();
+  // }
 
   // Store the SQL query string in the data structure
   Napi::String sql = info[0].ToString();
   data->sql = ODBC::NapiStringToSQLTCHAR(sql);
 
   // Store the callback function to call at the end of the AsyncWorker
-  Napi::Function callback = info[3].As<Napi::Function>();
+  Napi::Function callback = info[1].As<Napi::Function>();
 
   // If info[1] is not null or undefined, it is an array holding our parameters
-  if (!(info[1].IsNull() || info[1].IsUndefined()))
-  {
-    napiParameterArray = info[1].As<Napi::Array>();
-    data->parameterCount = (SQLSMALLINT)napiParameterArray.Length();
-    data->parameters = new Parameter*[data->parameterCount];
-    for (SQLSMALLINT i = 0; i < data->parameterCount; i++) {
-      data->parameters[i] = new Parameter();
-    }
-    ODBC::StoreBindValues(&napiParameterArray, data->parameters);
-  }
+  // if (!(info[1].IsNull() || info[1].IsUndefined()))
+  // {
+  //   napiParameterArray = info[1].As<Napi::Array>();
+  //   data->parameterCount = (SQLSMALLINT)napiParameterArray.Length();
+  //   data->parameters = new Parameter*[data->parameterCount];
+  //   for (SQLSMALLINT i = 0; i < data->parameterCount; i++) {
+  //     data->parameters[i] = new Parameter();
+  //   }
+  //   ODBC::StoreBindValues(&napiParameterArray, data->parameters);
+  // }
 
   Napi::Value   error;
 
@@ -1531,10 +1610,13 @@ Napi::Value ODBCConnection::QuerySync(const Napi::CallbackInfo& info) {
       error
     };
     callback.Call(callback_argument);
+  return env.Undefined();
   }
   else
   {
+      // printf("Hello\n");
     Napi::Value qsyncworker = QuerySyncWorker(this, napiParameterArray, data, callback, env);
+    // return qsyncworker;
     // QuerySyncWorker(ODBCConnection *odbcConnectionObject, 
     // Napi::Array napiParameterArray, 
     // StatementData *data,       
@@ -1546,7 +1628,6 @@ Napi::Value ODBCConnection::QuerySync(const Napi::CallbackInfo& info) {
     // worker->Queue();
   }
 
-  return env.Undefined();
 }
 
 // If we have a parameter with input/output params (e.g. calling a procedure),
