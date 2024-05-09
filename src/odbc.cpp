@@ -23,6 +23,7 @@
 #include "odbc_connection.h"
 #include "odbc_statement.h"
 #include "odbc_cursor.h"
+#include "odbc_sync_statement.h"
 
 #ifdef dynodbc
 #include "dynodbc.h"

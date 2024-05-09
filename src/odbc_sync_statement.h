@@ -20,7 +20,7 @@
 
 #include <napi.h>
 
-class ODBCStatement : public Napi::ObjectWrap<ODBCStatement> {
+class ODBCSyncStatement : public Napi::ObjectWrap<ODBCSyncStatement> {
   public:
     static Napi::FunctionReference constructor;
 
@@ -32,23 +32,13 @@ class ODBCStatement : public Napi::ObjectWrap<ODBCStatement> {
 
     SQLRETURN Free();
 
-    explicit ODBCStatement(const Napi::CallbackInfo& info);
-    ~ODBCStatement();
+    explicit ODBCSyncStatement(const Napi::CallbackInfo& info);
+    ~ODBCSyncStatement();
 
     Napi::Value Prepare(const Napi::CallbackInfo& info);
     Napi::Value Bind(const Napi::CallbackInfo& info);
     Napi::Value Execute(const Napi::CallbackInfo& info);
-    Napi::Value ExecuteSync(const Napi::CallbackInfo& info);
     Napi::Value Close(const Napi::CallbackInfo& info);
-    Napi::Value PrepBindExecuteSync(const Napi::CallbackInfo& info);
-
-  protected:
-    ODBCError *errors;
-    SQLINTEGER errorCount = 0;
-
-    // bool CheckAndHandleErrors(SQLRETURN return_code, SQLSMALLINT handleType, SQLHANDLE handle, const char *message);
-    ODBCError* GetODBCErrors(SQLSMALLINT handleType, SQLHANDLE handle);
-    void OnError(const Napi::Error &e, Napi::Function callback);
 };
 #endif
 

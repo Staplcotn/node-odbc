@@ -54,7 +54,11 @@
 #define SQL_DESTROY 9999
 
 #define IGNORED_PARAMETER 0
-
+extern const char* NO_MSG_TEXT;
+extern const char* ODBC_ERRORS;
+extern const char* STATE;
+extern const char* CODE;
+extern const char* MESSAGE;
 typedef struct ODBCError {
   SQLTCHAR    state[6];
   SQLINTEGER  code;
