@@ -11,8 +11,11 @@
       ],
       'cflags' : ['-Wall', '-Wextra', '-Wno-unused-parameter', '-DNAPI_DISABLE_CPP_EXCEPTIONS'],
       'include_dirs': [
-        '<!@(node -p "require(\'node-addon-api\').include")'
+        '<!@(node -p "require(\'node-addon-api\').include")',
+        "<!@(node -p \"require('node-addon-api').targets\"):node_addon_api_except"
       ],
+      # "dependencies":["<!@(node -p \"require('node-addon-api').targets\"):node_addon_api_except"],
+      # "dependencies":[    "<!(node -p \"require('node-addon-api').targets\"):node_addon_api",]
       'defines' : [
         'NAPI_EXPERIMENTAL',
         'NAPI_VERSION=<(napi_build_version)'

@@ -39,7 +39,7 @@ declare namespace odbc {
 
     execute<T>(callback: (error: NodeOdbcError, result: Result<T>) => undefined): undefined;
     executeSync<T>(query: string): Result<T>;
-
+    prepBindExecute<T>(sql: string, params: [[any, string]], callback: (error: NodeOdbcError)=> undefined): undefined;
     close(callback: (error: NodeOdbcError) => undefined): undefined;
 
     ////////////////////////////////////////////////////////////////////////////

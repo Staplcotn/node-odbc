@@ -18,7 +18,7 @@
 #include <napi.h>
 #include <time.h>
 #include <string>
-
+#include <iostream>
 #include "odbc.h"
 #include "odbc_connection.h"
 #include "odbc_statement.h"
@@ -1028,16 +1028,25 @@ Napi::Value ODBCStatement::Close(const Napi::CallbackInfo &info)
 // [ [ [value, column], [value, column] ], [ [value, column], [value, column] ] ]
 Napi::Value ODBCStatement::PrepBindExecuteSync(const Napi::CallbackInfo &info)
 {
+  // std::string str = info[0].ToString().Utf8Value();
+  // const char *q = str.c_str();
+  // printf(q);
   Napi::Env env = info.Env();
   // Piece-out variables
   Napi::HandleScope scope(env);
   // Third is callback
   Napi::Function callback = info[2].As<Napi::Function>();
-  if (!info[0].IsArray() || !info[1].IsFunction())
+  if (!info[1].IsArray() || !info[2].IsFunction())
   {
     Napi::TypeError::New(env, "Function signature is: bind(array, function)").ThrowAsJavaScriptException();
     return env.Null();
   }
+
+  // First param to function is the sql string
+  Napi::String sql = info[0].ToString();
+  SQLTCHAR *sqlstring = ODBC::NapiStringToSQLTCHAR(sql);
+  // 2nd param is parameters array
+  Napi::Array napiArray = info[1].As<Napi::Array>();
 
   if (this->data->hstmt == SQL_NULL_HANDLE)
   {
@@ -1048,10 +1057,8 @@ Napi::Value ODBCStatement::PrepBindExecuteSync(const Napi::CallbackInfo &info)
     return env.Undefined();
   }
   //
-  // First param to function is the sql string
-  Napi::String sql = info[0].ToString();
-  // 2nd param is parameters array
-  Napi::Array napiArray = info[0].As<Napi::Array>();
+  // SQLCHAR sqlString = ODBC::NapiStringToSQLTCHAR(sql);
+  // return env.Undefined();
   // Check user input
   this->napiParameters = Napi::Persistent(napiArray);
 
@@ -1063,10 +1070,10 @@ Napi::Value ODBCStatement::PrepBindExecuteSync(const Napi::CallbackInfo &info)
                          /////
   return_code = SQLPrepare(
       data->hstmt, // StatementHandle
-      data->sql,   // StatementText
+      sqlstring,   // StatementText
       SQL_NTS      // TextLength
   );
-  if (!SQL_SUCCEEDED(return_code))
+  if (return_code != SQL_SUCCESS)
   {
     this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
     Napi::Error error = Napi::Error::New(env, "Statment handle is no longer valid. Cannot bind SQL on an invalid statment handle.");
@@ -1086,7 +1093,7 @@ Napi::Value ODBCStatement::PrepBindExecuteSync(const Napi::CallbackInfo &info)
     this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
     Napi::Error error = Napi::Error::New(env, "Statment handle is no longer valid. Cannot bind SQL on an invalid statment handle.");
     OnError(error, callback);
-    return env.Undefined();
+    return env.Null();
   }
   /////
   // We now know how many parameters are needed for the query to run.
@@ -1105,26 +1112,78 @@ Napi::Value ODBCStatement::PrepBindExecuteSync(const Napi::CallbackInfo &info)
   //   callback.Call(callbackArguments);
   //   return env.Undefined();
   // }
-  return Napi::Number::New(env,return_code);
   // array of Parameters
   // converts NAPI/JavaScript values to values used by SQLBindParameter
-  // ODBC::StoreBindValues(&napiArray, this->data->parameters);
+  size_t rowsCount = napiArray.Length();
+  std::cout << rowsCount << "\n";
+  /////
+  // Start looping over the rows.
+  /////
+  for (size_t i = 0; i <= rowsCount; i++)
+  {
+    // Parameter **params = NULL;
+    data->parameters = new Parameter *[data->parameterCount];
+    for (SQLSMALLINT i = 0; i < data->parameterCount; i++)
+    {
+      data->parameters[i] = new Parameter();
+    }
+    Napi::Array row = napiArray.Get(i).As<Napi::Array>();
+    ODBC::StoreBindValues(&row, data->parameters);
+    // std::cout << data->parameters[0][i].ValueType << "\n";
+    printf("\nHELLO\n");
+    // std::cout << this->data->parameters.Get(static_cast<uint32_t>(0)).As<Napi::Value>() << i << "\n";
+    return_code = ODBC::DescribeParameters(this->data->hstmt, this->data->parameters, this->data->parameterCount);
   // // Determine data type of column
-  // return_code = ODBC::DescribeParameters(this->data->hstmt, this->data->parameters, this->data->parameterCount);
-  // if (!SQL_SUCCEEDED(return_code))
-  // {
-  //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
-  //   SetError("[odbc] Error retrieving information about the parameters in the statement\0");
-  //   return;
-  // }
 
-  // return_code = ODBC::BindParameters(data->hstmt, data->parameters, data->parameterCount);
+    if (!SQL_SUCCEEDED(return_code))
+    {
+      this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      //  this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      Napi::Error error = Napi::Error::New(env, "[odbc] Error retrieving information about the parameters in the statement\0");
+
+      OnError(error, callback);
+      return env.Undefined();
+    }
+    return_code = ODBC::BindParameters(data->hstmt, data->parameters, data->parameterCount);
+    printf("done!!");
+
+    return_code =
+        set_fetch_size(
+            data,
+            data->query_options.fetch_size);
+    if (!SQL_SUCCEEDED(return_code))
+    {
+      this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      Napi::Error error = Napi::Error::New(env, "[odbc] Error setting the fetch size\0");
+
+      OnError(error, callback);
+      return env.Undefined();
+    }
+    return_code =
+        SQLExecute(
+            data->hstmt // StatementHandle
+        );
+    if (!SQL_SUCCEEDED(return_code))
+    {
+      this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+      Napi::Error error = Napi::Error::New(env, "[odbc] Error executing the statement\0");
+      OnError(error, callback);
+      return env.Undefined();
+    }
+      printf("Callback!!?");
+  }
   // if (!SQL_SUCCEEDED(return_code))
   // {
   //   this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+  Napi::Value code = Napi::Number::New(env, return_code);
+  // std::vector<napi_value> callbackArguments;
+  // callbackArguments.push_back(code);
+  // callback.Call(callbackArguments);
   //   SetError("[odbc] Error binding parameters to the statement\0");
   //   return;
   // }
+  // return env.Undefined();
+  return code;
   // // Pass over to our sync worker
   // Napi::Value qsyncworker = QuerySyncWorker(this, napiParameterArray, data, callback, env);
 }
